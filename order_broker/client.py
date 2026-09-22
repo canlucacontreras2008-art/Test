@@ -32,9 +32,14 @@ class ProducerClient:
         self._result_waiters: dict[str, asyncio.Future] = {}
         self._listener_task: asyncio.Task | None = None
 
-    async def connect(self) -> None:
+    async def connect(self, subscribe_workers: bool = False) -> None:
+        """`subscribe_workers`, if true, opts this connection into
+        worker_status broadcasts (also delivered through on_event) so a
+        caller can track worker connect/idle/busy/disconnect events."""
         self._ws = await websockets.connect(self.uri)
         self._listener_task = asyncio.create_task(self._listen())
+        if subscribe_workers:
+            await self._ws.send(p.encode(p.SUBSCRIBE_WORKERS))
 
     async def close(self) -> None:
         if self._listener_task is not None:

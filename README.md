@@ -58,14 +58,23 @@ wire protocol is plain JSON over WebSocket, documented in
 
 ## Desktop app
 
-`desktop_app/` is a Tkinter GUI with two tabs:
+`desktop_app/` is a Tkinter GUI with three tabs:
 
-- **Builder** — design order forms: give a `job_type` a name and a list of
-  typed fields (`str`/`int`/`float`/`bool`). Forms are saved as JSON under
-  `~/.order_broker/forms/`.
 - **Dashboard** — connect to a broker, fill in a saved form (or submit a
   raw `job_type` + JSON payload) and watch a live table of orders as they
   move through `queued` → `dispatched` → `completed`/`failed`.
+- **Visualizer** — a live canvas view of the broker and its workers: each
+  connected worker is a node (grey = idle, orange = busy, fading out on
+  disconnect) joined to the broker by a path, and every dispatched order
+  animates as a marker traveling that path, pulsing while the worker is
+  on it and flashing green/red when it completes or fails.
+- **Builder** — design order forms: give a `job_type` a name and a list of
+  typed fields (`str`/`int`/`float`/`bool`). Forms are saved as JSON under
+  `~/.order_broker/forms/`.
+
+The Dashboard and Visualizer share one connection to the broker (opted
+into worker-status broadcasts via `subscribe_workers`), so anything
+submitted from the Dashboard shows up moving through the Visualizer too.
 
 It needs a Tk-enabled Python. On Debian/Ubuntu, install the binding for
 whichever Python runs it (match the version, e.g. `python3.11-tk` for
@@ -97,17 +106,19 @@ The first run seeds two example forms (`add`, `shout`) that work with
 
 Every message is one JSON object with a `"type"` field.
 
-| Direction         | type              | fields                                    |
-|--------------------|-------------------|--------------------------------------------|
-| producer -> broker | `submit_order`    | `job_type`, `payload`                       |
-| broker -> producer  | `order_accepted`  | `order_id`, `status`                        |
-| broker -> producer  | `order_update`    | `order_id`, `status`, `result?`, `error?`   |
-| worker -> broker   | `register_worker` | `queues` (list of job types)                |
-| broker -> worker    | `register_ack`    | `worker_id`, `queues`                       |
-| broker -> worker    | `dispatch`        | `order_id`, `job_type`, `payload`           |
-| worker -> broker   | `order_result`    | `order_id`, `status`, `result?`, `error?`   |
-| either -> broker    | `ping`            | —                                            |
-| broker -> either    | `pong` / `error`  | `message?`                                   |
+| Direction            | type                | fields                                                             |
+|-----------------------|---------------------|---------------------------------------------------------------------|
+| producer -> broker    | `submit_order`      | `job_type`, `payload`                                                |
+| broker -> producer    | `order_accepted`    | `order_id`, `status`                                                 |
+| broker -> producer    | `order_update`      | `order_id`, `status`, `job_type`, `worker_id?`, `result?`, `error?`  |
+| worker -> broker      | `register_worker`   | `queues` (list of job types)                                         |
+| broker -> worker      | `register_ack`      | `worker_id`, `queues`                                                |
+| broker -> worker      | `dispatch`          | `order_id`, `job_type`, `payload`                                    |
+| worker -> broker      | `order_result`      | `order_id`, `status`, `result?`, `error?`                            |
+| either -> broker      | `ping`              | —                                                                     |
+| either -> broker      | `subscribe_workers` | — opt in to `worker_status` broadcasts                               |
+| broker -> subscriber  | `worker_status`     | `worker_id`, `queues`, `busy`, `current_order_id`, `event`           |
+| broker -> either      | `pong` / `error`    | `message?`                                                           |
 
 ## Tests
 

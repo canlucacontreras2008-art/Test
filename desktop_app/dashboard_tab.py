@@ -16,9 +16,10 @@ POLL_MS = 100
 
 
 class DashboardTab(ttk.Frame):
-    def __init__(self, parent: tk.Widget) -> None:
+    def __init__(self, parent: tk.Widget, broker: BrokerThread) -> None:
         super().__init__(parent, padding=10)
-        self.broker = BrokerThread()
+        self.broker = broker
+        self.events = broker.add_listener()
         self._forms: dict[str, FormDef] = {}
         self._field_vars: dict[str, tk.StringVar] = {}
         self._pending_rows: deque[tuple[str, tuple, str]] = deque()  # (job_type, payload, tree_item_id)
@@ -157,7 +158,7 @@ class DashboardTab(ttk.Frame):
     def _poll_events(self) -> None:
         try:
             while True:
-                kind, data = self.broker.events.get_nowait()
+                kind, data = self.events.get_nowait()
                 self._handle_event(kind, data)
         except queue.Empty:
             pass
@@ -192,6 +193,3 @@ class DashboardTab(ttk.Frame):
             self.tree.set(item_id, "status", msg.get("status", ""))
             self.tree.set(item_id, "result", "" if msg.get("result") is None else str(msg.get("result")))
             self.tree.set(item_id, "error", msg.get("error") or "")
-
-    def shutdown(self) -> None:
-        self.broker.close()

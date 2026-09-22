@@ -34,6 +34,7 @@ class Broker:
         self._orders: dict[str, Order] = {}
         self._producer_ws: dict[str, object] = {}
         self._workers: dict[str, _Worker] = {}
+        self._worker_subscribers: dict[str, object] = {}
         self._pending: dict[str, deque[str]] = defaultdict(deque)
         self._lock = asyncio.Lock()
 
@@ -58,6 +59,8 @@ class Broker:
                     await self._on_order_result(worker, msg)
                 elif msg_type == p.PING:
                     await ws.send(p.encode(p.PONG))
+                elif msg_type == p.SUBSCRIBE_WORKERS:
+                    await self._on_subscribe_workers(client_id, ws)
                 else:
                     await ws.send(p.encode(p.ERROR, message=f"unknown message type {msg_type!r}"))
 
@@ -75,8 +78,23 @@ class Broker:
         async with self._lock:
             self._workers[client_id] = worker
         await ws.send(p.encode(p.REGISTER_ACK, worker_id=client_id, queues=queues))
+        await self._broadcast_worker_status(worker, "connected")
         await self._dispatch_loop(queues)
         return worker
+
+    async def _on_subscribe_workers(self, client_id: str, ws) -> None:
+        async with self._lock:
+            self._worker_subscribers[client_id] = ws
+            snapshot = list(self._workers.values())
+        for worker in snapshot:
+            await ws.send(p.encode(
+                p.WORKER_STATUS,
+                worker_id=worker.worker_id,
+                queues=worker.queues,
+                busy=worker.busy,
+                current_order_id=worker.current_order_id,
+                event="busy" if worker.busy else "connected",
+            ))
 
     async def _on_submit_order(self, client_id: str, ws, msg: dict) -> None:
         job_type = msg.get("job_type")
@@ -108,6 +126,7 @@ class Broker:
                 worker.current_order_id = None
         await self._notify_producer(order)
         if worker is not None:
+            await self._broadcast_worker_status(worker, "idle")
             # Only this worker just freed up, so only its own queues can
             # possibly have new work for it - no need to rescan every job type.
             await self._dispatch_loop(worker.queues)
@@ -117,6 +136,7 @@ class Broker:
         # up new capacity, so there's nothing new to dispatch.
         async with self._lock:
             self._producer_ws.pop(client_id, None)
+            self._worker_subscribers.pop(client_id, None)
             if worker is not None:
                 self._workers.pop(client_id, None)
                 if worker.busy and worker.current_order_id is not None:
@@ -125,6 +145,8 @@ class Broker:
                         order.status = OrderStatus.QUEUED
                         order.worker_id = None
                         self._pending[order.job_type].append(order.order_id)
+        if worker is not None:
+            await self._broadcast_worker_status(worker, "disconnected")
 
     async def _notify_producer(self, order: Order) -> None:
         ws = self._producer_ws.get(order.producer_id)
@@ -135,11 +157,28 @@ class Broker:
                 p.ORDER_UPDATE,
                 order_id=order.order_id,
                 status=order.status.value,
+                job_type=order.job_type,
+                worker_id=order.worker_id,
                 result=order.result,
                 error=order.error,
             ))
         except websockets.ConnectionClosed:
             pass
+
+    async def _broadcast_worker_status(self, worker: _Worker, event: str) -> None:
+        msg = p.encode(
+            p.WORKER_STATUS,
+            worker_id=worker.worker_id,
+            queues=worker.queues,
+            busy=worker.busy,
+            current_order_id=worker.current_order_id,
+            event=event,
+        )
+        for ws in list(self._worker_subscribers.values()):
+            try:
+                await ws.send(msg)
+            except websockets.ConnectionClosed:
+                pass
 
     async def _dispatch_loop(self, job_types: list[str] | None = None) -> None:
         """Try to match queued orders to free workers.
@@ -180,6 +219,7 @@ class Broker:
                         worker.current_order_id = None
                         queue.appendleft(order_id)
                         continue
+                    await self._broadcast_worker_status(worker, "busy")
                     await self._notify_producer(order)
 
 
