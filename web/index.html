@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Order Broker</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Order Broker</h1>
+  <div class="conn-bar">
+    <input id="uri" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <button id="connectBtn">Connect</button>
+  </div>
+  <div id="status" class="status">not connected</div>
+</header>
+
+<nav class="tabs">
+  <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+  <button class="tab-btn" data-tab="visualizer">Visualizer</button>
+</nav>
+
+<main>
+  <section id="dashboard" class="tab-panel active">
+    <div class="card">
+      <label for="jobType">job_type</label>
+      <input id="jobType" type="text" placeholder="add" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <label for="payload">payload (JSON)</label>
+      <textarea id="payload" rows="3" placeholder='{"a": 2, "b": 3}'></textarea>
+      <button id="submitBtn">Submit order</button>
+    </div>
+    <div class="table-wrap">
+      <table id="ordersTable">
+        <thead>
+          <tr><th>order_id</th><th>job_type</th><th>status</th><th>result</th><th>error</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="visualizer" class="tab-panel">
+    <canvas id="canvas"></canvas>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
