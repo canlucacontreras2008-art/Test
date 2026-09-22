@@ -1,12 +1,14 @@
 """Visualizer tab: a canvas showing the broker, its connected workers, and
 orders animated as markers traveling from the broker out to whichever
-worker picked them up, pulsing while in flight and flashing on completion.
+worker picked them up, pulsing while in flight. On completion the path
+itself flashes green (or red on failure) while the marker fades out.
 """
 
 from __future__ import annotations
 
 import math
 import queue
+import random
 import time
 import tkinter as tk
 from tkinter import ttk
@@ -21,14 +23,29 @@ DISCONNECT_FADE_MS = 1200
 
 BACKGROUND = "#1e2228"
 EDGE_COLOR = "#3a3f47"
+EDGE_WIDTH = 2
+EDGE_HIGHLIGHT_WIDTH = 4
 BROKER_COLOR = "#3a6ea5"
 IDLE_COLOR = "#9aa5b1"
 BUSY_COLOR = "#f0a53d"
 DISCONNECTED_COLOR = "#55595f"
 SUCCESS_COLOR = "#3fbf6f"
 FAIL_COLOR = "#e05a5a"
-TASK_COLOR = "#4a90d9"
 TEXT_COLOR = "#cfd6de"
+
+# Task marker colors - deliberately excludes green (reserved for the
+# success flash), gray (reserved for idle/disconnected nodes), white, and
+# black, so a marker never gets confused for broker/node/status feedback.
+TASK_COLORS = [
+    "#9b59b6",  # purple
+    "#e84393",  # pink
+    "#f1c40f",  # gold
+    "#ff7f50",  # coral
+    "#6c5ce7",  # indigo
+    "#e17055",  # terracotta
+    "#0984e3",  # bright blue
+    "#e67e22",  # amber
+]
 
 NODE_RADIUS = 22
 TASK_RADIUS = 7
@@ -55,9 +72,9 @@ class _TaskMarker:
         self.start = start
         self.end = end
         self.spawned_at = time.monotonic()
-        self.state = "traveling"  # traveling -> arrived -> flashing
-        self.flash_started_at: float | None = None
-        self.flash_color: str | None = None
+        self.state = "traveling"  # traveling -> arrived -> completing
+        self.completing_started_at: float | None = None
+        self.color = random.choice(TASK_COLORS)
         self.canvas_id: int | None = None
 
 
@@ -71,6 +88,7 @@ class VisualizerTab(ttk.Frame):
         self.worker_order: list[str] = []
         self.edges: dict[str, int] = {}
         self.tasks: dict[str, _TaskMarker] = {}
+        self.edge_flashes: dict[str, tuple[str, float]] = {}  # worker_id -> (color, started_at)
 
         self.broker_pos = (110, 300)
 
@@ -96,7 +114,7 @@ class VisualizerTab(ttk.Frame):
 
     def _draw_edge(self, node: _WorkerNode) -> None:
         bx, by = self.broker_pos
-        line_id = self.canvas.create_line(bx, by, node.x, node.y, fill=EDGE_COLOR, width=2)
+        line_id = self.canvas.create_line(bx, by, node.x, node.y, fill=EDGE_COLOR, width=EDGE_WIDTH)
         self.canvas.tag_lower(line_id)
         self.edges[node.worker_id] = line_id
 
@@ -185,17 +203,18 @@ class VisualizerTab(ttk.Frame):
         if status == "dispatched" and order_id not in self.tasks and worker_id in self.workers:
             worker = self.workers[worker_id]
             marker = _TaskMarker(order_id, self.broker_pos, (worker.x, worker.y))
-            marker.canvas_id = self.canvas.create_oval(0, 0, 0, 0, fill=TASK_COLOR, outline="")
+            marker.canvas_id = self.canvas.create_oval(0, 0, 0, 0, fill=marker.color, outline="")
             self.tasks[order_id] = marker
             return
 
         if status in ("completed", "failed"):
             marker = self.tasks.get(order_id)
-            if marker is None:
-                return
-            marker.state = "flashing"
-            marker.flash_started_at = time.monotonic()
-            marker.flash_color = SUCCESS_COLOR if status == "completed" else FAIL_COLOR
+            if marker is not None:
+                marker.state = "completing"
+                marker.completing_started_at = time.monotonic()
+            if worker_id in self.edges:
+                color = SUCCESS_COLOR if status == "completed" else FAIL_COLOR
+                self.edge_flashes[worker_id] = (color, time.monotonic())
 
     # -- animation ----------------------------------------------------------
 
@@ -213,16 +232,31 @@ class VisualizerTab(ttk.Frame):
             elif marker.state == "arrived":
                 pulse = 1.0 + 0.25 * math.sin((now - marker.spawned_at) * 4)
                 self._place_marker(marker, marker.end[0], marker.end[1], TASK_RADIUS * pulse)
-            elif marker.state == "flashing":
-                elapsed = now - marker.flash_started_at
-                self.canvas.itemconfig(marker.canvas_id, fill=marker.flash_color)
+            elif marker.state == "completing":
+                elapsed = now - marker.completing_started_at
                 shrink = max(0.0, 1.0 - elapsed / FLASH_SECONDS)
-                self._place_marker(marker, marker.end[0], marker.end[1], TASK_RADIUS * (1 + shrink))
+                self._place_marker(marker, marker.end[0], marker.end[1], TASK_RADIUS * shrink)
                 if elapsed >= FLASH_SECONDS:
                     self.canvas.delete(marker.canvas_id)
                     finished.append(order_id)
         for order_id in finished:
             del self.tasks[order_id]
+
+        expired_edges: list[str] = []
+        for worker_id, (color, started_at) in self.edge_flashes.items():
+            line_id = self.edges.get(worker_id)
+            if line_id is None:
+                expired_edges.append(worker_id)
+                continue
+            elapsed = now - started_at
+            if elapsed >= FLASH_SECONDS:
+                self.canvas.itemconfig(line_id, fill=EDGE_COLOR, width=EDGE_WIDTH)
+                expired_edges.append(worker_id)
+            else:
+                self.canvas.itemconfig(line_id, fill=color, width=EDGE_HIGHLIGHT_WIDTH)
+        for worker_id in expired_edges:
+            del self.edge_flashes[worker_id]
+
         self.after(TICK_MS, self._tick)
 
     def _place_marker(self, marker: _TaskMarker, x: float, y: float, r: float) -> None:
