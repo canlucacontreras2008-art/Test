@@ -102,6 +102,71 @@ Then, with the broker running (see above):
 The first run seeds two example forms (`add`, `shout`) that work with
 `examples/example_worker.py`.
 
+## Web UI (phone-friendly)
+
+`web/` is a mobile-friendly static page — same Dashboard + Visualizer
+features as the desktop app's first two tabs, but it's plain HTML/CSS/
+vanilla JS with no build step, and it talks to the broker directly from
+the browser over the same WebSocket protocol. Anything reachable with a
+browser (including a phone) can use it.
+
+```bash
+.venv/bin/python examples/run_web_ui.py localhost 8080
+```
+
+Then open `http://localhost:8080/` — the page defaults its broker URI to
+`ws://<the page's own host>:8765`, so if you serve both on the same
+machine you can just hit Connect. On a phone, edit that field to point at
+wherever the broker actually runs.
+
+## Accessing it from your phone (Raspberry Pi + Tailscale)
+
+To check in on the broker from your phone from anywhere (not just your
+home Wi-Fi), run everything on a small always-on machine like a
+Raspberry Pi, and use [Tailscale](https://tailscale.com/) to reach it —
+a free private network between your own devices. It avoids the usual
+self-hosting headaches (port forwarding, dynamic DNS, exposing an
+unauthenticated service to the public internet) since only devices
+logged into your Tailscale account can reach the Pi at all.
+
+**On the Pi:**
+
+```bash
+# 1. Get the code and dependencies onto the Pi (git clone, scp, etc.),
+#    then from the project directory:
+sudo apt install python3-venv python3-tk
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+
+# 2. Bind the broker and web UI to all interfaces, not just localhost,
+#    so something other than the Pi itself can reach them:
+.venv/bin/python examples/run_server.py 0.0.0.0 8765 &
+.venv/bin/python examples/run_web_ui.py 0.0.0.0 8080 &
+.venv/bin/python examples/example_worker.py &   # or your own workers
+
+# 3. Install Tailscale and join your account:
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+```
+
+`tailscale up` prints (and `tailscale ip -4` shows anytime after) the
+Pi's Tailscale address, e.g. `100.x.x.x`, or a stable MagicDNS name like
+`raspberrypi.your-tailnet.ts.net`.
+
+**On your phone:** install the Tailscale app, log into the same account,
+then open `http://<that address>:8080/` in your phone's browser and set
+the broker URI field to `ws://<that address>:8765`.
+
+To keep the broker/web UI/workers running across reboots instead of
+babysitting `&` background jobs over SSH, wrap each command in a systemd
+unit (`ExecStart=/path/to/.venv/bin/python examples/run_server.py 0.0.0.0
+8765`, `WantedBy=multi-user.target`, etc.) and `systemctl enable` them.
+
+**Security note:** the broker has no authentication - anyone who can
+reach it (i.e. anyone on your tailnet) can submit orders and see all
+order data. Fine for a personal single-user tailnet; if you ever share
+that tailnet with other people, or expose these ports outside Tailscale
+entirely, add auth in front of it first.
+
 ## Wire protocol
 
 Every message is one JSON object with a `"type"` field.
