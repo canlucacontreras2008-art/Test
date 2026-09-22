@@ -56,6 +56,34 @@ Any program in any language can act as a producer or worker too — the
 wire protocol is plain JSON over WebSocket, documented in
 `order_broker/protocol.py`.
 
+## Desktop app
+
+`desktop_app/` is a Tkinter GUI with two tabs:
+
+- **Builder** — design order forms: give a `job_type` a name and a list of
+  typed fields (`str`/`int`/`float`/`bool`). Forms are saved as JSON under
+  `~/.order_broker/forms/`.
+- **Dashboard** — connect to a broker, fill in a saved form (or submit a
+  raw `job_type` + JSON payload) and watch a live table of orders as they
+  move through `queued` → `dispatched` → `completed`/`failed`.
+
+It needs a Tk-enabled Python. On Debian/Ubuntu, install the binding for
+whichever Python runs it (match the version, e.g. `python3.11-tk` for
+Python 3.11):
+
+```bash
+sudo apt install python3-tk   # or python3.11-tk / python3.12-tk, etc.
+```
+
+Then, with the broker running (see above):
+
+```bash
+.venv/bin/python -m desktop_app
+```
+
+The first run seeds two example forms (`add`, `shout`) that work with
+`examples/example_worker.py`.
+
 ## Wire protocol
 
 Every message is one JSON object with a `"type"` field.

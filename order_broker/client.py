@@ -20,8 +20,13 @@ class ProducerClient:
     in request order.
     """
 
-    def __init__(self, uri: str = "ws://localhost:8765") -> None:
+    def __init__(self, uri: str = "ws://localhost:8765", on_event: Callable[[dict], None] | None = None) -> None:
+        """`on_event`, if given, is called with every raw message this client
+        receives (order_accepted and order_update alike), letting a caller
+        observe intermediate states like "dispatched" that submit() itself
+        doesn't surface since it only resolves on a terminal result."""
         self.uri = uri
+        self.on_event = on_event
         self._ws = None
         self._accept_waiters: deque[asyncio.Future] = deque()
         self._result_waiters: dict[str, asyncio.Future] = {}
@@ -51,6 +56,8 @@ class ProducerClient:
         async for raw in self._ws:
             msg = p.decode(raw)
             msg_type = msg.get("type")
+            if self.on_event is not None:
+                self.on_event(msg)
             if msg_type == p.ORDER_ACCEPTED:
                 if self._accept_waiters:
                     self._accept_waiters.popleft().set_result(msg["order_id"])
