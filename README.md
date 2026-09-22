@@ -69,10 +69,19 @@ wire protocol is plain JSON over WebSocket, documented in
 
 It needs a Tk-enabled Python. On Debian/Ubuntu, install the binding for
 whichever Python runs it (match the version, e.g. `python3.11-tk` for
-Python 3.11):
+Python 3.11, `python3.12-tk` for 3.12):
 
 ```bash
 sudo apt install python3-tk   # or python3.11-tk / python3.12-tk, etc.
+```
+
+If your distro only ships `-tk` bindings for its default Python version
+(commonly the case for non-default versions installed via a PPA), it's
+simplest to build the venv with that default version instead:
+
+```bash
+sudo apt install python3-tk
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ```
 
 Then, with the broker running (see above):
