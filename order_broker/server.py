@@ -19,6 +19,7 @@ class _Worker:
         self.ws = ws
         self.queues = queues
         self.busy = False
+        self.current_order_id: str | None = None
 
 
 class Broker:
@@ -74,7 +75,7 @@ class Broker:
         async with self._lock:
             self._workers[client_id] = worker
         await ws.send(p.encode(p.REGISTER_ACK, worker_id=client_id, queues=queues))
-        await self._dispatch_loop()
+        await self._dispatch_loop(queues)
         return worker
 
     async def _on_submit_order(self, client_id: str, ws, msg: dict) -> None:
@@ -88,7 +89,7 @@ class Broker:
             self._producer_ws[client_id] = ws
             self._pending[job_type].append(order.order_id)
         await ws.send(p.encode(p.ORDER_ACCEPTED, order_id=order.order_id, status=order.status.value))
-        await self._dispatch_loop()
+        await self._dispatch_loop([job_type])
 
     async def _on_order_result(self, worker: _Worker | None, msg: dict) -> None:
         order_id = msg.get("order_id")
@@ -104,21 +105,26 @@ class Broker:
             order.error = msg.get("error")
             if worker is not None:
                 worker.busy = False
+                worker.current_order_id = None
         await self._notify_producer(order)
-        await self._dispatch_loop()
+        if worker is not None:
+            # Only this worker just freed up, so only its own queues can
+            # possibly have new work for it - no need to rescan every job type.
+            await self._dispatch_loop(worker.queues)
 
     async def _on_disconnect(self, client_id: str, worker: _Worker | None) -> None:
+        # Note: no dispatch_loop call here - losing a connection never frees
+        # up new capacity, so there's nothing new to dispatch.
         async with self._lock:
             self._producer_ws.pop(client_id, None)
             if worker is not None:
                 self._workers.pop(client_id, None)
-                if worker.busy:
-                    for order in self._orders.values():
-                        if order.worker_id == worker.worker_id and order.status == OrderStatus.DISPATCHED:
-                            order.status = OrderStatus.QUEUED
-                            order.worker_id = None
-                            self._pending[order.job_type].append(order.order_id)
-        await self._dispatch_loop()
+                if worker.busy and worker.current_order_id is not None:
+                    order = self._orders.get(worker.current_order_id)
+                    if order is not None and order.status == OrderStatus.DISPATCHED:
+                        order.status = OrderStatus.QUEUED
+                        order.worker_id = None
+                        self._pending[order.job_type].append(order.order_id)
 
     async def _notify_producer(self, order: Order) -> None:
         ws = self._producer_ws.get(order.producer_id)
@@ -135,9 +141,22 @@ class Broker:
         except websockets.ConnectionClosed:
             pass
 
-    async def _dispatch_loop(self) -> None:
+    async def _dispatch_loop(self, job_types: list[str] | None = None) -> None:
+        """Try to match queued orders to free workers.
+
+        `job_types` scopes the attempt to just those queues - the caller
+        knows which queues could possibly have gained new orders or new
+        capacity since the last dispatch, so most callers only need to
+        check a handful of queues rather than every one that has ever had
+        an order (this matters once a broker has been up long enough to
+        have accumulated many distinct job types).
+        """
         async with self._lock:
-            for job_type, queue in list(self._pending.items()):
+            types_to_check = job_types if job_types is not None else list(self._pending.keys())
+            for job_type in types_to_check:
+                queue = self._pending.get(job_type)
+                if not queue:
+                    continue
                 available = [w for w in self._workers.values() if not w.busy and job_type in w.queues]
                 while queue and available:
                     worker = available.pop(0)
@@ -146,6 +165,7 @@ class Broker:
                     order.status = OrderStatus.DISPATCHED
                     order.worker_id = worker.worker_id
                     worker.busy = True
+                    worker.current_order_id = order.order_id
                     try:
                         await worker.ws.send(p.encode(
                             p.DISPATCH,
@@ -157,6 +177,7 @@ class Broker:
                         order.status = OrderStatus.QUEUED
                         order.worker_id = None
                         worker.busy = False
+                        worker.current_order_id = None
                         queue.appendleft(order_id)
                         continue
                     await self._notify_producer(order)

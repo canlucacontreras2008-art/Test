@@ -3,6 +3,7 @@ import asyncio
 import pytest
 import websockets
 
+from order_broker import protocol as proto
 from order_broker.client import ProducerClient, WorkerClient
 from order_broker.server import Broker
 
@@ -74,3 +75,29 @@ async def test_order_queued_until_worker_available(broker_uri):
 
     assert result["status"] == "completed"
     assert result["result"] == {"job_type": "echo", "echo": {"late": True}}
+
+
+async def test_order_requeued_when_worker_disconnects_mid_job(broker_uri):
+    flaky_ws = await websockets.connect(broker_uri)
+    await flaky_ws.send(proto.encode(proto.REGISTER_WORKER, queues=["flaky"]))
+    await flaky_ws.recv()  # register_ack
+
+    producer = ProducerClient(uri=broker_uri)
+    await producer.connect()
+    submit_task = asyncio.create_task(producer.submit("flaky", {"n": 1}))
+
+    dispatch_msg = proto.decode(await asyncio.wait_for(flaky_ws.recv(), timeout=5))
+    assert dispatch_msg["type"] == "dispatch"
+    await flaky_ws.close()  # vanish mid-job, without ever sending order_result
+
+    reliable = WorkerClient(queues=["flaky"], handler=echo_handler, uri=broker_uri)
+    reliable_task = asyncio.create_task(reliable.run())
+
+    try:
+        result = await asyncio.wait_for(submit_task, timeout=5)
+    finally:
+        await producer.close()
+        reliable_task.cancel()
+
+    assert result["status"] == "completed"
+    assert result["result"] == {"job_type": "flaky", "echo": {"n": 1}}
